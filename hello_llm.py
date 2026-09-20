@@ -64,6 +64,7 @@ PROVIDERS = {
         # 若报"模型不存在"，去硅基流动的模型广场复制准确的模型 ID 填这里
         "model": "Qwen/Qwen2.5-7B-Instruct",
     },
+
 }
 
 # 每个平台读各自的 Key 文件，按顺序找第一个存在的。
@@ -79,7 +80,7 @@ MAX_RETRY = 3            # 遇到 429 限流时最多重试几次
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 QUESTIONS_FILE = os.path.join(BASE_DIR, "questions.txt")
-RESULT_FILE = os.path.join(BASE_DIR, "results.csv")
+RESULT_FILE = os.path.join(BASE_DIR, "results1.csv")
 
 
 # ============================================================
@@ -243,7 +244,7 @@ def smoke_test(api_key):
     print(f"冒烟测试｜平台：{PROVIDER}｜模型：{PROVIDERS[PROVIDER]['model']}")
     print("=" * 60)
 
-    question = "用一句话解释：为什么大模型的回答会有不确定性？"
+    question = "AI是怎么被训练师训练的？"
     print(f"\n提问：{question}\n")
 
     r = call_model(question, api_key)
