@@ -24,6 +24,7 @@ AI 测试转岗 · 第一个脚本
 
 import csv
 import json
+import math
 import os
 import re
 import sys
@@ -354,7 +355,12 @@ def batch_run(api_key):
     if latencies:
         latencies_sorted = sorted(latencies)
         p50 = latencies_sorted[len(latencies_sorted) // 2]
-        print(f"延迟｜P50 {p50}s｜最大 {max(latencies)}s｜最小 {min(latencies)}s")
+        # P95 用"最近秩法"：排名向上取整再减 1。
+        # 不能用 int(len * 0.95) - 1 —— 样本少时 int() 会向下截断，
+        # 实测 3 条样本会把 P95 算成中位数、2 条样本算成最小值。
+        # 小样本（比如调试时的 5-10 条）里这个 bug 会直接把长尾藏起来。
+        p95 = latencies_sorted[math.ceil(len(latencies_sorted) * 0.95) - 1]
+        print(f"延迟｜P50 {p50}s｜P95 {p95}s｜最大 {max(latencies)}s｜最小 {min(latencies)}s")
     if tokens:
         print(f"Token｜合计 {sum(tokens)}｜平均每条 {round(sum(tokens) / len(tokens))}")
     print("=" * 60)
