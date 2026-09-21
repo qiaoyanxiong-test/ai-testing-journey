@@ -79,6 +79,11 @@ KEY_CANDIDATES = {
 REQUEST_INTERVAL = 0.5   # 每次请求之间的间隔（秒）
 MAX_RETRY = 3            # 遇到 429 限流时最多重试几次
 
+# 采样温度：0 最稳定（同一问题反复问答案基本一致），1 最发散。
+# 做评测必须固定它，否则同一批样本你都不知道差异是模型能力还是随机噪声。
+# 第 4 周的温度实验已经验证过这一点（见 docs/）。
+TEMPERATURE = 0.7
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 QUESTIONS_FILE = os.path.join(BASE_DIR, "questions.txt")
 RESULT_FILE = os.path.join(BASE_DIR, "results1.csv")
@@ -147,7 +152,7 @@ def load_api_key(provider=None):
 # 核心：调一次模型
 # ============================================================
 
-def call_model(question, api_key, system_prompt=None):
+def call_model(question, api_key, system_prompt=None, temperature=None, provider=None, model=None):
     """
     调用一次大模型，返回一个 dict：
         answer          净化后的回答文本（已剥掉 </think> 之类杂质）
@@ -156,8 +161,11 @@ def call_model(question, api_key, system_prompt=None):
         prompt_tokens / completion_tokens / total_tokens   token 用量 —— 成本指标
         reasoning_tokens  思考型模型花在"想"上的 token（部分平台不提供）
         error           出错时的错误信息，正常时为 None
+
+    参数都可以临时覆盖（不传就用配置区的默认值）——第 5 周做温度/多模型对比时全靠这一点。
     """
-    cfg = PROVIDERS[PROVIDER]
+    provider = provider or PROVIDER
+    cfg = PROVIDERS[provider]
 
     messages = []
     if system_prompt:
@@ -165,9 +173,9 @@ def call_model(question, api_key, system_prompt=None):
     messages.append({"role": "user", "content": question})
 
     payload = {
-        "model": cfg["model"],
+        "model": model or cfg["model"],
         "messages": messages,
-        "temperature": 0.7,   # 0 更稳定、1 更发散。做评测时常常要固定成 0
+        "temperature": TEMPERATURE if temperature is None else temperature,
         "stream": False,      # 先不开流式，逻辑简单。日后做延迟评测要测 TTFT 再开
     }
     headers = {
@@ -234,6 +242,35 @@ def call_model(question, api_key, system_prompt=None):
     if result["error"] is None:
         result["error"] = f"重试 {MAX_RETRY} 次后仍未成功（大概率是限流）"
     return result
+
+
+# ============================================================
+# 统计：纯计算，不碰网络
+# ============================================================
+
+def summarize_latencies(latencies):
+    """
+    把一串耗时算成分位数，返回 dict：count / p50 / p95 / max / min。
+
+    为什么单独抽成一个函数？——因为它**不调 API、不读文件、不依赖网络**，
+    输入一串数字、输出一串数字。这类"纯函数"可以直接被自动化测试覆盖，
+    跑一次只要 0.01 秒，还永远不会因为限流而失败。
+
+    这就是写测试的第一条原则：**先把脏活（网络、文件、时间）和净活（计算）分开。**
+    网络调用没法测（慢、贵、结果随机），但计算逻辑必须测，而且能测得很彻底。
+    """
+    values = sorted(v for v in latencies if v is not None)   # 失败条目耗时是 None，要先剔除
+    if not values:
+        return {"count": 0, "p50": None, "p95": None, "max": None, "min": None}
+    return {
+        "count": len(values),
+        "p50": values[len(values) // 2],
+        # P95 用"最近秩法"：排名向上取整再减 1。不能用 int(len*0.95)-1，
+        # int() 向下截断会让 3 条样本的 P95 变成中位数、2 条的变成最小值。
+        "p95": values[math.ceil(len(values) * 0.95) - 1],
+        "max": values[-1],
+        "min": values[0],
+    }
 
 
 # ============================================================
@@ -347,20 +384,17 @@ def batch_run(api_key):
         writer.writeheader()
         writer.writerows(rows)
 
-    latencies = [r["耗时秒"] for r in rows if r["耗时秒"]]
+    latencies = [r["耗时秒"] for r in rows]
     tokens = [r["总tokens"] for r in rows if r["总tokens"]]
 
     print("\n" + "=" * 60)
     print(f"完成：成功 {ok}/{len(questions)}，结果已保存到 {RESULT_FILE}")
-    if latencies:
-        latencies_sorted = sorted(latencies)
-        p50 = latencies_sorted[len(latencies_sorted) // 2]
-        # P95 用"最近秩法"：排名向上取整再减 1。
-        # 不能用 int(len * 0.95) - 1 —— 样本少时 int() 会向下截断，
-        # 实测 3 条样本会把 P95 算成中位数、2 条样本算成最小值。
-        # 小样本（比如调试时的 5-10 条）里这个 bug 会直接把长尾藏起来。
-        p95 = latencies_sorted[math.ceil(len(latencies_sorted) * 0.95) - 1]
-        print(f"延迟｜P50 {p50}s｜P95 {p95}s｜最大 {max(latencies)}s｜最小 {min(latencies)}s")
+    stats = summarize_latencies(latencies)
+    if stats["count"]:
+        print(f"延迟｜P50 {stats['p50']}s｜P95 {stats['p95']}s"
+              f"｜最大 {stats['max']}s｜最小 {stats['min']}s｜有效样本 {stats['count']} 条")
+        if stats["count"] < 20:
+            print("      注意：样本不足 20 条，P95 只是粗略参考，不能当作稳定结论。")
     if tokens:
         print(f"Token｜合计 {sum(tokens)}｜平均每条 {round(sum(tokens) / len(tokens))}")
     print("=" * 60)
