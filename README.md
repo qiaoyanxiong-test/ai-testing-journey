@@ -7,7 +7,7 @@ ai产品项目的测试流程学习
 | 路径 | 内容 |
 |---|---|
 | `hello_llm.py` | LLM 调用与评测脚本：冒烟测试 + 批量评测，输出 P50/P95 延迟、token 用量，含 429 指数退避重试 |
-| `tests/test_stats.py` | 16 条 Pytest 用例，覆盖输出净化与延迟统计（含小样本 P95 回归测试） |
+| `tests/test_stats.py` | 21 条 Pytest 用例，覆盖输出净化、Key 文件清洗与延迟统计（含小样本 P95 回归测试） |
 | `docs/badcases.md` | 12 条真实 bad case（含根因分层）+ 性能基线 + 8 条评测集设计规范 |
 | `questions.txt` | 自制的 10 条评测问题，覆盖准确性 / 逻辑推理 / 一致性 / 内容安全 / 鲁棒性五个维度 |
 
@@ -30,7 +30,7 @@ pip install requests pytest
 
 # 3. 配置 API Key（不要提交！已在 .gitignore 中）
 #    智谱:   存到 zp_api_key.txt
-#    硅基流动: 存到 gjld_api_key.txt
+#    阿里云百炼: 存到 bl_api_key.txt
 
 # 4. 冒烟测试（单条）或批量评测（10 条）
 python hello_llm.py
@@ -42,13 +42,14 @@ python -m pytest -v
 ## 环境
 
 - Python 3.9 / pytest 8.4 / requests
-- 被测模型：智谱 `glm-4-flash`（默认）、硅基流动多模型（评测对比用）
+- 被测模型：智谱 `glm-4-flash`（免费档，日常冒烟）｜阿里云百炼 `qwen3.8-flash`（轻量档主力）+ `qwen3.8-max`（旗舰标尺）
+- 跨平台比成本不可直接比：智谱为免费档，百炼按量计费，且只有百炼返回 `reasoning_tokens` 明细
 - 测试数据与原始结果分批保留在本地（`results*.csv` 不入库，精选归档进 `data/`）
 
 ## 路线图
 
 - [x] 第 1 周：跑通 API 调用，积累 12 条真实 bad case
-- [x] 第 4 周：Git 作品集 + 可测化改造 + 第一套 Pytest 用例（16 passed）
+- [x] 第 4 周：Git 作品集 + 可测化改造 + 第一套 Pytest 用例（现已 21 passed）
 - [ ] 第 5-8 周：README / 参数化 / 夹具 / 多模型对比实验
 - [ ] 第 9-14 周：分层评测集（100 条）、完整指标体系、CI 自动化
 - [ ] 第 15-20 周：RAG 归因、红队测试、正式评测报告

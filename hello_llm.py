@@ -11,8 +11,10 @@ AI 测试转岗 · 第一个脚本
     pip install requests
     在脚本同目录放一个 Key 文件，第一行只放 Key，不要有多余字符。
     脚本会按平台自动找，命名成下面任意一种都能被识别：
-        智谱    ：api_key_zhipu.txt / zp_api_key.txt / api_key.txt
-        硅基流动：api_key_siliconflow.txt / gjld_api_key.txt / api_key.txt
+        智谱    ：api_key_zhipu.txt / zp_api_key.txt / zhipu_api_key.txt
+        阿里云百炼：api_key_bl.txt / bl_api_key.txt
+    注意：两个平台都不再认通用的 api_key.txt。两家都放同名文件时，
+         切平台会静默读到错的那把 Key，报 401 还找不出原因。
     这些文件必须写进 .gitignore —— 千万不要把 Key 推上 GitHub
 
 运行：
@@ -43,7 +45,9 @@ if hasattr(sys.stdout, "reconfigure"):
 # 配置区：只需要改这里
 # ============================================================
 
-# 选一个平台："zhipu"（智谱，推荐第一站）或 "siliconflow"（硅基流动，评测主力）
+# 选一个平台：
+#   "zhipu" 智谱      —— 长期免费、最稳，日常冒烟和练手用它
+#   "bl"    阿里云百炼 —— 评测主力，按量计费，批量跑之前先算成本
 PROVIDER = "zhipu"
 
 PROVIDERS = {
@@ -56,14 +60,21 @@ PROVIDERS = {
         #   第 13 周批量跑几百条评测时千万别拿它当默认——那笔账到时候专门算。
         "model": "glm-4-flash",
     },
-    "siliconflow": {
-        "url": "https://api.siliconflow.cn/v1/chat/completions",
-        # 以下三个都在本机实测过（2026-09-16）：
-        #   Qwen/Qwen2.5-7B-Instruct  0.7 秒  非思考型，输出干净  ← 默认用它
-        #   zai-org/GLM-4.5-Air       3.1 秒  思考型，但对答正常
-        #   Qwen/Qwen3-8B            17.7 秒  思考型，慢且费 token
-        # 若报"模型不存在"，去硅基流动的模型广场复制准确的模型 ID 填这里
-        "model": "Qwen/Qwen2.5-7B-Instruct",
+    "bl": {
+        # 百炼的兼容端点有两种，同一个 Key 都能用：
+        #   ① 标准端点（用这个，写进报告别人才复现得了）
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        #   ② 子业务空间端点（属于你账号专属，不适合对外发报告）：
+        #      https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions
+        #
+        # 模型 ID 必须全小写：写成 Qwen3.8-Max 会 404 model_not_found（2026-09-22 实测）。
+        # 本机实测（2026-09-22，温度 0）：
+        #   qwen3.8-flash  轻量档，便宜   ← 批量评测的日常主力，默认用它
+        #   qwen3.8-max    旗舰档，按量计费 ← 当"标尺"用，别拿它批量跑几百条
+        # 两个都是思考型：推理过程单独放在 reasoning_content 里，
+        # 所以 content 是干净的；但 token 口径和 glm-4-flash 不可直接比。
+        # 若报"模型不存在"，去百炼的模型广场复制准确的模型 ID 填这里。
+        "model": "qwen3.8-flash",
     },
 
 }
@@ -71,8 +82,8 @@ PROVIDERS = {
 # 每个平台读各自的 Key 文件，按顺序找第一个存在的。
 # 这样两家 Key 可以并存，切换 PROVIDER 就等于切平台，不用来回改名。
 KEY_CANDIDATES = {
-    "zhipu":       ["api_key_zhipu.txt", "zp_api_key.txt", "zhipu_api_key.txt", "api_key.txt"],
-    "siliconflow": ["api_key_siliconflow.txt", "gjld_api_key.txt", "siliconflow_api_key.txt", "api_key.txt"],
+    "zhipu": ["api_key_zhipu.txt", "zp_api_key.txt", "zhipu_api_key.txt"],
+    "bl":    ["api_key_bl.txt", "bl_api_key.txt"],
 }
 
 # 批量跑的时候的并发节奏。免费额度有限流，新手别调太高
@@ -81,7 +92,7 @@ MAX_RETRY = 3            # 遇到 429 限流时最多重试几次
 
 # 采样温度：0 最稳定（同一问题反复问答案基本一致），1 最发散。
 # 做评测必须固定它，否则同一批样本你都不知道差异是模型能力还是随机噪声。
-# 第 4 周的温度实验已经验证过这一点（见 docs/）。
+# （第 4 周的温度实验验证过这一点，但那次的记录还没归档进 docs/ —— 是笔待还的账。）
 TEMPERATURE = 0.7
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -126,7 +137,7 @@ def load_api_key(provider=None):
     if key:
         return key
 
-    candidates = KEY_CANDIDATES.get(provider, ["zp_api_key.txt"])
+    candidates = KEY_CANDIDATES.get(provider, [])
     for name in candidates:
         path = os.path.join(BASE_DIR, name)
         if not os.path.exists(path):
@@ -157,6 +168,7 @@ def call_model(question, api_key, system_prompt=None, temperature=None, provider
     调用一次大模型，返回一个 dict：
         answer          净化后的回答文本（已剥掉 </think> 之类杂质）
         raw_answer      模型的原话，一字未改
+        reasoning_content  思考型模型的推理过程（部分平台/模型为空字符串）
         latency         端到端耗时（秒）—— 这是你日后要评测的性能指标之一
         prompt_tokens / completion_tokens / total_tokens   token 用量 —— 成本指标
         reasoning_tokens  思考型模型花在"想"上的 token（部分平台不提供）
@@ -183,7 +195,8 @@ def call_model(question, api_key, system_prompt=None, temperature=None, provider
         "Content-Type": "application/json",
     }
 
-    result = {"answer": "", "raw_answer": "", "latency": None, "prompt_tokens": None,
+    result = {"answer": "", "raw_answer": "", "reasoning_content": "",
+              "latency": None, "prompt_tokens": None,
               "completion_tokens": None, "reasoning_tokens": None,
               "total_tokens": None, "error": None}
 
@@ -198,9 +211,11 @@ def call_model(question, api_key, system_prompt=None, temperature=None, provider
             time.sleep(2 ** attempt)   # 退避重试
             continue
 
-        # 429 有好几种原因，把服务端原话打出来，别自己猜：
-        #   1305 = 该模型当前访问量过大（服务端拥堵，等几分钟再跑）
-        #   1302 / 1304 = 触发了并发或频率限制（降并发、拉开间隔）
+        # 429 有两大类原因，性质完全不同，别一看 429 就以为是自己跑太快：
+        #   a) 服务端模型拥堵 —— 降并发没用，只能换模型或等几分钟
+        #   b) 自己触发的频率/并发限制 —— 拉开请求间隔、降并发
+        # 各平台错误码不一样（智谱 1305 属 a、1302/1304 属 b；百炼是 Throttling 系列），
+        # 所以这里不写死错误码，直接把服务端原话打印出来，自己判断属于哪一类。
         if resp.status_code == 429:
             wait = 2 ** attempt
             print(f"    触发限流(429)，等待 {wait} 秒后重试（第 {attempt}/{MAX_RETRY} 次）")
@@ -228,6 +243,10 @@ def call_model(question, api_key, system_prompt=None, temperature=None, provider
         # 两个都存，因为排查"模型到底输出了什么"时，原始值才是证据。
         result["raw_answer"] = message.get("content") or ""
         result["answer"] = clean_answer(result["raw_answer"])
+        # 思考型模型（百炼 qwen3.8 系列、DeepSeek 等）把推理过程单独放在这个字段。
+        # 平时答题用不到它，但做"模型为什么答错"的归因时，这里才是原因所在 ——
+        # 所以必须存下来，别丢。智谱 glm-4-flash 不返回该字段，这里是空字符串。
+        result["reasoning_content"] = (message.get("reasoning_content") or "").strip()
 
         usage = data.get("usage", {}) or {}
         result["prompt_tokens"] = usage.get("prompt_tokens")
@@ -237,6 +256,10 @@ def call_model(question, api_key, system_prompt=None, temperature=None, provider
         # 所以跨模型比成本时不能只看 total_tokens —— 口径可能根本不一致。
         details = usage.get("completion_tokens_details") or {}
         result["reasoning_tokens"] = details.get("reasoning_tokens")
+        # 关键：前面某次重试若网络异常，error 里会残留旧报错；
+        # 这次成功就必须清掉，否则 CSV 里会出现"有答案却带着报错"的脏行，
+        # 延迟统计（按"错误列为空"筛选）也会把这条成功样本错杀。
+        result["error"] = None
         return result
 
     if result["error"] is None:
@@ -371,6 +394,7 @@ def batch_run(api_key):
             "问题": q,
             "模型回答": r["answer"],
             "原始返回": r["raw_answer"],
+            "思考过程": r["reasoning_content"],
             "耗时秒": r["latency"],
             "总tokens": r["total_tokens"],
             "思考tokens": r["reasoning_tokens"],
@@ -384,7 +408,7 @@ def batch_run(api_key):
         writer.writeheader()
         writer.writerows(rows)
 
-    latencies = [r["耗时秒"] for r in rows]
+    latencies = [r["耗时秒"] for r in rows if not r["错误"]]
     tokens = [r["总tokens"] for r in rows if r["总tokens"]]
 
     print("\n" + "=" * 60)
@@ -403,6 +427,112 @@ def batch_run(api_key):
 
 
 # ============================================================
+# 模式三：多模型对比
+# ============================================================
+
+# 参赛模型名单（2026-09-22 实测可用）。
+# 选人思路：两个"轻量档"横比 + 一个"旗舰"当标尺。
+#   只放旗舰 → 结论会退化成"贵的更好"，等于什么都没证明。
+# 注意成本口径：智谱是免费档、百炼按量计费，两者"平均 tokens"不可直接比。
+# 想换选手就改这里，模型 ID 必须从平台"模型广场"原样复制（百炼必须全小写）。
+COMPARE_MODELS = [
+    {"provider": "zhipu",       "model": "glm-4-flash"},
+    {"provider": "bl", "model": "qwen3.8-max"},
+    {"provider": "bl", "model": "qwen3.8-flash"},
+]
+
+# 对比实验统一用 0 度：对比的前提是控制变量，一次只允许变"模型"这一个因素。
+COMPARE_TEMPERATURE = 0.0
+
+
+def _model_tag(model):
+    """Qwen/Qwen2.5-7B-Instruct -> Qwen2.5-7B-Instruct，用作文件名。"""
+    return model.split("/")[-1]
+
+
+def compare_models(questions, models=None, temperature=COMPARE_TEMPERATURE):
+    """
+    同一批问题跑多个模型，每个模型单独存一份 CSV 到 data/ 目录，
+    最后打印一张横向对比表。返回对比统计列表（给测试用）。
+
+    这是评测的核心业务雏形：固定题目、固定温度，只变模型。
+    """
+    if models is None:
+        models = COMPARE_MODELS
+
+    data_dir = os.path.join(BASE_DIR, "data")
+    os.makedirs(data_dir, exist_ok=True)
+
+    summary = []
+    for m in models:
+        key = load_api_key(m["provider"])
+        tag = _model_tag(m["model"])
+        print("\n" + "=" * 60)
+        print(f"选手：{m['model']}（平台 {m['provider']}）｜温度 {temperature}")
+        print("=" * 60)
+
+        rows = []
+        ok = 0
+        for i, q in enumerate(questions, 1):
+            print(f"[{i}/{len(questions)}] {q[:40]}{'...' if len(q) > 40 else ''}")
+            r = call_model(q, key, temperature=temperature,
+                           provider=m["provider"], model=m["model"])
+            if r["error"]:
+                print(f"    失败：{r['error'][:120]}")
+            else:
+                ok += 1
+                print(f"    OK｜{r['latency']}s｜{r['total_tokens']} tokens")
+            rows.append({
+                "序号": i,
+                "问题": q,
+                "模型": m["model"],
+                "模型回答": r["answer"],
+                "原始返回": r["raw_answer"],
+                "思考过程": r["reasoning_content"],
+                "耗时秒": r["latency"],
+                "总tokens": r["total_tokens"],
+                "思考tokens": r["reasoning_tokens"],
+                "错误": r["error"] or "",
+            })
+            time.sleep(REQUEST_INTERVAL)
+
+        csv_path = os.path.join(data_dir, f"compare_{tag}.csv")
+        with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+
+        # 口径：只有"成功"的调用才计入延迟统计。
+        # 失败调用也有耗时（比如 0.3 秒就返回 402），但那是"报错耗时"，
+        # 混进去会把 P50/P95 整体拉低，得出"模型很快"的假结论。
+        latencies = [r["耗时秒"] for r in rows if not r["错误"]]
+        tokens = [r["总tokens"] for r in rows if r["总tokens"]]
+        stats = summarize_latencies(latencies)
+        summary.append({
+            "model": m["model"],
+            "provider": m["provider"],
+            "ok": ok,
+            "total": len(questions),
+            "p50": stats["p50"],
+            "p95": stats["p95"],
+            "avg_tokens": round(sum(tokens) / len(tokens)) if tokens else None,
+            "csv": csv_path,
+        })
+
+    print("\n" + "=" * 60)
+    print("对比总表（同一批题、同一温度，只有模型不同）")
+    print("=" * 60)
+    for s in summary:
+        p50 = f"{s['p50']}s" if s["p50"] is not None else "-"
+        p95 = f"{s['p95']}s" if s["p95"] is not None else "-"
+        tok = s["avg_tokens"] if s["avg_tokens"] is not None else "-"
+        print(f"  {s['model']:<32} 成功 {s['ok']}/{s['total']}｜P50 {p50}｜P95 {p95}｜平均 tokens {tok}")
+    print(f"\n每个模型的明细在 data/ 目录：compare_<模型名>.csv")
+    print("下一步：逐条横向对答案——同一道题，谁对了谁错了？错法一样吗？")
+    return summary
+
+
+# ============================================================
 # 入口
 # ============================================================
 
@@ -411,12 +541,20 @@ def main():
 
     print("\n选择要做什么：")
     print("  1. 冒烟测试（先跑这个，确认环境通了）")
-    print("  2. 批量运行（读 questions.txt，结果存 results.csv）")
-    choice = input("输入 1 或 2，回车默认 1：").strip() or "1"
+    print("  2. 批量运行（读 questions.txt，结果存 results1.csv）")
+    print("  3. 多模型对比（同一批题跑 3 个模型，结果存 data/）")
+    choice = input("输入 1 / 2 / 3，回车默认 1：").strip() or "1"
 
     print()
     if choice == "2":
         batch_run(api_key)
+    elif choice == "3":
+        ensure_questions_file()
+        questions = load_questions()
+        if not questions:
+            print("questions.txt 里没有有效问题，已退出。")
+            return
+        compare_models(questions)
     else:
         smoke_test(api_key)
 
